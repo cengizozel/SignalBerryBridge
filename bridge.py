@@ -85,6 +85,12 @@ def init_db():
         db.execute(
             "CREATE INDEX IF NOT EXISTS idx_peer_ts ON messages(peer, server_ts)"
         )
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS read_markers (
+                peer         TEXT    PRIMARY KEY,
+                last_read_ts INTEGER NOT NULL DEFAULT 0
+            )
+        """)
 
 
 @contextmanager
@@ -267,6 +273,50 @@ def get_messages():
         items.append(item)
 
     return jsonify({"items": items})
+
+
+@app.route("/read", methods=["POST"])
+def mark_read():
+    raw_peer = request.args.get("peer", "").strip()
+    try:
+        ts = int(request.args.get("ts", 0))
+    except ValueError:
+        return jsonify({"error": "invalid ts"}), 400
+    if not raw_peer:
+        return jsonify({"error": "peer required"}), 400
+
+    peer = normalize_peer(raw_peer)
+    with _db_lock, _conn() as db:
+        db.execute(
+            "INSERT INTO read_markers (peer, last_read_ts) VALUES (?, ?) "
+            "ON CONFLICT(peer) DO UPDATE SET last_read_ts = MAX(last_read_ts, excluded.last_read_ts)",
+            (peer, ts),
+        )
+    return jsonify({"ok": True})
+
+
+@app.route("/unread")
+def get_unread():
+    with _conn() as db:
+        peers = db.execute(
+            "SELECT DISTINCT peer FROM messages WHERE dir = 'in'"
+        ).fetchall()
+
+        result = {}
+        for row in peers:
+            peer = row["peer"]
+            marker = db.execute(
+                "SELECT last_read_ts FROM read_markers WHERE peer = ?", (peer,)
+            ).fetchone()
+            last_read_ts = marker["last_read_ts"] if marker else 0
+            count = db.execute(
+                "SELECT COUNT(*) AS cnt FROM messages "
+                "WHERE peer = ? AND dir = 'in' AND server_ts > ?",
+                (peer, last_read_ts),
+            ).fetchone()["cnt"]
+            result[peer] = count
+
+    return jsonify(result)
 
 
 @app.route("/health")
