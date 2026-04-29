@@ -1,0 +1,31 @@
+version: "3"
+
+services:
+  signal-api:
+    image: bbernhard/signal-cli-rest-api:latest
+    container_name: signal-api
+    restart: always
+    ports:
+      - "5000:8080"
+    environment:
+      - MODE=json-rpc
+      - LOG_LEVEL=info
+    volumes:
+      - ${HOME}/.local/share/signal-api:/home/.local/share/signal-cli
+
+  bridge:
+    build: ./bridge
+    container_name: signal-bridge
+    restart: always
+    ports:
+      - "9099:9099"
+    environment:
+      - SIGNAL_API_URL=http://signal-api:8080
+      - SIGNAL_NUMBER=${SIGNAL_NUMBER}   # set in your shell or a .env file
+    volumes:
+      - bridge-data:/data
+    depends_on:
+      - signal-api
+
+volumes:
+  bridge-data:
