@@ -178,11 +178,10 @@ def handle_envelope(env: dict):
     # delivery / read receipts → upgrade the latest outgoing message to that peer
     receipt = env.get("receiptMessage")
     if receipt:
-        rtype = (receipt.get("type") or "").upper()
-        peer  = best_peer(src_num, src_uuid)
-        if rtype == "DELIVERY":
+        peer = best_peer(src_num, src_uuid)
+        if receipt.get("isDelivery"):
             upgrade_status(peer, 2)
-        elif rtype in ("READ", "VIEWED"):
+        elif receipt.get("isRead") or receipt.get("isViewed"):
             upgrade_status(peer, 3)
 
 
