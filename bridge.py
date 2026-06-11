@@ -41,7 +41,10 @@ SIGNAL_NUMBER  = os.environ.get("SIGNAL_NUMBER", "")
 DB_PATH        = os.environ.get("DB_PATH", "/data/bridge.db")
 PORT           = int(os.environ.get("PORT", "9099"))
 # shared secret for remote access. Empty = auth disabled (LAN/dev/tests).
-BRIDGE_TOKEN   = os.environ.get("BRIDGE_TOKEN", "").strip()
+# SB_AUTH_TOKEN is the canonical name (also protects the signal-api auth proxy);
+# BRIDGE_TOKEN kept for backward compatibility.
+BRIDGE_TOKEN   = (os.environ.get("SB_AUTH_TOKEN")
+                 or os.environ.get("BRIDGE_TOKEN", "")).strip()
 
 SCHEMA_VERSION = 2
 # bump when the /v2/changes row shape changes in a way the app must match

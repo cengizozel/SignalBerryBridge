@@ -1,86 +1,82 @@
-# Remote access (off-LAN) — Cloudflare Tunnel + Access
+# Remote access (off-LAN)
 
-Use SignalBerry away from home WiFi, behind CGNAT, **without a VPS and without
-opening any inbound ports**. The BlackBerry Q10 can't run a VPN (the BB10
-Android runtime has no VpnService), so the path is: an outbound Cloudflare
-Tunnel from the home server to Cloudflare's edge, with Cloudflare Access +
-a bridge token gating who can reach it.
+Use SignalBerry away from home WiFi. The design is **transport-agnostic**: you
+expose two local services however you like — Cloudflare Tunnel, Tailscale,
+WireGuard, a VPS reverse proxy, plain port-forward — and a single shared
+**bearer token** protects both, so you are not tied to any one provider.
 
-## Why both auth layers
+## The two services and how they're protected
 
-Two backends get exposed through the tunnel:
+| Service                         | Built-in auth | How it's protected for remote use |
+|---------------------------------|---------------|-----------------------------------|
+| bridge (`:9099`)                | yes (token)   | `SB_AUTH_TOKEN` bearer, enforced in-process |
+| signal-cli-rest-api (`:5000`)   | **none**      | `signal-api-auth` proxy (`:5001`) enforcing the same token |
 
-| Backend         | What it can do            | Gate                                   |
-|-----------------|---------------------------|----------------------------------------|
-| signal-cli-rest-api (`:8080`) | send as you, read everything | **Cloudflare Access only** (no built-in auth) |
-| bridge (`:9099`)              | the change feed          | **Cloudflare Access + bearer token**   |
+The app sends `Authorization: Bearer <SB_AUTH_TOKEN>` on every request, plus the
+modern TLS (Conscrypt) needed by old BlackBerry hardware. So for remote use you
+expose **port 5001** (the auth proxy) and **port 9099** (the bridge) — never
+signal-api's raw 5000.
 
-Cloudflare Access is therefore **required**, not optional — it's the only thing
-standing in front of the Signal REST API. The bridge token is a second lock on
-the bridge in case the Access policy is ever misconfigured.
+## Activate the token + proxy
 
-TLS to a 2013 device: the app bundles **Conscrypt**, which gives it TLS 1.3 +
-modern certs regardless of the ancient OS stack (verified on a real Q10).
+1. Put a strong secret in `.env`:
+   ```
+   SB_AUTH_TOKEN=<long random string>
+   ```
+2. Bring up the auth proxy and re-create the bridge so it picks up the token:
+   ```
+   docker compose --profile remote up -d signal-api-auth
+   docker compose up -d bridge
+   ```
+3. Now expose **`localhost:5001`** and **`localhost:9099`** with whatever
+   transport you choose (examples below).
+4. In the app's **Remote access** section:
+   - **Server:** `https://<your-signal-api-host>`   (fronts port 5001)
+   - **Bridge URL:** `https://<your-bridge-host>`    (fronts port 9099)
+   - **Bridge token:** the `SB_AUTH_TOKEN` value
+   - CF Access fields: only if you also use Cloudflare Access (optional, below)
+
+LAN is unaffected: leave the remote fields blank, point at `192.168.1.x:5000`,
+and nothing changes (no token → no headers → original behaviour).
 
 ---
 
-## One-time setup
+## Transport options (pick one)
 
-### 1. Cloudflare account + domain
-- A Cloudflare account, and a domain whose nameservers point to Cloudflare
-  (any domain you control — the Free plan is enough).
+### Cloudflare Tunnel (no public IP / CGNAT-friendly, no open ports)
+- Create a tunnel (Zero Trust → Networks → Tunnels). If running cloudflared in
+  this compose, set `CF_TUNNEL_TOKEN` in `.env` and `docker compose --profile
+  remote up -d cloudflared`; if running it natively on the host, just run that
+  tunnel there.
+- Add two **public hostnames**, pointing at the host-published ports:
+  | Hostname            | Service URL              |
+  |---------------------|--------------------------|
+  | `sb-api.<domain>`   | `http://localhost:5001`  |
+  | `sb-bridge.<domain>`| `http://localhost:9099`  |
+- Cloudflare provides TLS at the edge; the app talks to it over Conscrypt TLS 1.3.
+- *Optional extra layer:* Cloudflare Access with a service token gives edge-level
+  filtering on top of the bearer token. If you use it, paste the Access Client
+  ID/Secret into the app's CF fields. Not required — the bearer token already
+  protects both services.
 
-### 2. Create the tunnel (dashboard)
-- Zero Trust dashboard → **Networks → Tunnels → Create a tunnel** → *Cloudflared*.
-- Name it (e.g. `signalberry`). Copy the **tunnel token** it shows.
-- Add it to `/opt/docker/stacks/signalberrybridge/.env`:
-  ```
-  CF_TUNNEL_TOKEN=<the long token>
-  BRIDGE_TOKEN=<the bridge token from chat>
-  ```
-- Under the tunnel's **Public Hostnames**, add two:
-  | Subdomain   | Domain        | Service                  |
-  |-------------|---------------|--------------------------|
-  | `sb-api`    | `yourdomain`  | `http://signal-api:8080` |
-  | `sb-bridge` | `yourdomain`  | `http://bridge:9099`     |
-  (Service points at the **container name + internal port**, reachable because
-  cloudflared shares the compose network.)
+### Tailscale / WireGuard / other VPN
+- Put the home server on the VPN; reach `100.x.y.z:5001` and `:9099` from the
+  phone *if* the phone can run the VPN. (Note: the BlackBerry Q10's BB10 Android
+  runtime can't run a VPN client — Cloudflare Tunnel is the practical pick there.)
 
-### 3. Start the tunnel
-```
-cd /opt/docker/stacks/signalberrybridge
-docker compose --profile remote up -d        # starts cloudflared
-docker compose up -d bridge                   # picks up BRIDGE_TOKEN
-```
+### VPS reverse proxy
+- A small VPS with a real IP, reverse-proxying (and/or TLS-terminating) to the
+  home server over your own WireGuard/SSH tunnel. Point it at `:5001` and `:9099`.
 
-### 4. Cloudflare Access — service token + policy
-- Zero Trust → **Access → Service Auth → Service Tokens → Create**.
-  Name it (e.g. `signalberry-q10`). Copy the **Client ID** and **Client Secret**
-  (the secret is shown once).
-- Zero Trust → **Access → Applications → Add an application → Self-hosted**.
-  - Application domain: `sb-api.yourdomain`. Add a **second** domain in the same
-    app (or a second app) for `sb-bridge.yourdomain`.
-  - Policy: **Action = Service Auth**, include → **Service Token** → the one above.
-  - This makes both hostnames reject anything without the service-token headers,
-    *at Cloudflare's edge, before it reaches your server.*
-
-### 5. Enter it in the app
-On the SignalBerry connect screen, expand **Remote access (Cloudflare)**:
-- **Server (top field):** `https://sb-api.yourdomain`
-- **Bridge URL:** `https://sb-bridge.yourdomain`
-- **Bridge token:** the `BRIDGE_TOKEN` value
-- **CF Access Client ID / Secret:** from step 4
-
-Tap **Connect**. The app sends the Access headers to both hostnames and the
-bearer token to the bridge, all over Conscrypt TLS 1.3.
+In every case the bearer token is the constant protection; the transport just
+moves bytes.
 
 ---
 
 ## Notes
-- **LAN still works**: leave the remote fields blank and use `192.168.1.x:5000`
-  as before — no creds means no headers, unchanged behaviour.
-- **Rotate** a leaked secret in the Cloudflare dashboard (service token) or by
-  changing `BRIDGE_TOKEN` in `.env` + `docker compose up -d bridge` and updating
-  the app.
-- The credentials live only in app prefs and the server `.env` — never in git.
-- The tunnel is **outbound only**; nothing is port-forwarded, CGNAT is irrelevant.
+- One secret, two services: `SB_AUTH_TOKEN` (legacy alias `BRIDGE_TOKEN` still
+  read). Rotate it in `.env` + `docker compose up -d bridge signal-api-auth` and
+  update the app.
+- Secrets live only in `.env` and app prefs — never in git (`.env` is gitignored).
+- The auth-proxy token check is a simple string compare (not constant-time);
+  fine for a personal deployment behind a tunnel.

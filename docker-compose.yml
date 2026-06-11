@@ -24,16 +24,35 @@ services:
       - SIGNAL_API_URL=http://signal-api:8080
       - SIGNAL_NUMBER=${SIGNAL_NUMBER}   # set in your shell or a .env file
       # remote-access shared secret. Empty/unset = auth OFF (LAN only).
-      - BRIDGE_TOKEN=${BRIDGE_TOKEN:-}
+      - SB_AUTH_TOKEN=${SB_AUTH_TOKEN:-}
+      - BRIDGE_TOKEN=${BRIDGE_TOKEN:-}   # legacy alias
     volumes:
       - bridge-data:/data
     depends_on:
       - signal-api
 
-  # Outbound tunnel to Cloudflare's edge — defeats CGNAT, no inbound ports.
-  # Dormant by default; bring up with:  docker compose --profile remote up -d
-  # Needs CF_TUNNEL_TOKEN in .env (from the Cloudflare Zero Trust dashboard).
-  # See docs/REMOTE_ACCESS.md.
+  # Bearer-token gate in front of signal-cli-rest-api (which has no auth itself).
+  # Expose THIS (port 5001) instead of signal-api directly when going remote;
+  # the bearer token then protects both services regardless of transport.
+  # Dormant by default; start with:  docker compose --profile remote up -d signal-api-auth
+  signal-api-auth:
+    image: nginx:alpine
+    container_name: signal-api-auth
+    restart: always
+    profiles: ["remote"]
+    environment:
+      - SB_AUTH_TOKEN=${SB_AUTH_TOKEN:-${BRIDGE_TOKEN:-}}
+    volumes:
+      - ./remote/signal-api-auth.conf.template:/etc/nginx/templates/default.conf.template:ro
+    ports:
+      - "5001:80"
+    depends_on:
+      - signal-api
+
+  # OPTIONAL example transport: outbound Cloudflare tunnel (defeats CGNAT, no
+  # inbound ports). Use any tunnel/VPN/proxy instead — the token protects the
+  # services either way. Dormant; start with: docker compose --profile remote up -d
+  # Needs CF_TUNNEL_TOKEN in .env. (If you run cloudflared natively, skip this.)
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: signal-cloudflared
