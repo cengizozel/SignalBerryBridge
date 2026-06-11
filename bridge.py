@@ -42,15 +42,18 @@ DB_PATH        = os.environ.get("DB_PATH", "/data/bridge.db")
 PORT           = int(os.environ.get("PORT", "9099"))
 
 SCHEMA_VERSION = 2
+# bump when the /v2/changes row shape changes in a way the app must match
+API_VERSION = 3
 ORPHAN_TTL_MS  = 30 * 24 * 3600 * 1000
 CONTACTS_REFRESH_S = 6 * 3600
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("bridge")
 
-_UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-    re.IGNORECASE,
+from sigshapes import (  # pure helpers (unit-tested in tests/test_sigshapes.py)
+    normalize_peer, is_uuid_key, kind_from_mime,
+    attachments_of as _attachments_of, quote_of as _quote_of,
+    KIND_BY_MIME, _UUID_RE, _UUID_SEARCH,
 )
 
 # runtime state for /health
@@ -60,40 +63,6 @@ _state = {
 }
 
 # ── peer normalisation ────────────────────────────────────────────────────────
-
-_UUID_SEARCH = re.compile(
-    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
-
-
-def normalize_peer(s: str) -> str:
-    """
-    Phone numbers  → digits only  ("+1 (555) 123-4567" → "15551234567")
-    UUIDs          → lowercase    ("ABC-..." → "abc-...")
-    Service IDs    → bare uuid    ("PNI:<uuid>" → "<uuid>"; sent after a
-                                   contact re-registers / changes phones)
-    Anything else  → lowercase stripped; digit-stripping is refused for
-                     strings whose digits exceed E.164's 15-digit maximum
-                     (that would forge a fake number out of a uuid)
-    """
-    s = (s or "").strip()
-    if not s:
-        return ""
-    if s.startswith("group:"):
-        return s          # base64 group id: case/symbols significant, never touch
-    if _UUID_RE.match(s):
-        return s.lower()
-    m = _UUID_SEARCH.search(s)
-    if m:
-        return m.group(0).lower()
-    digits = re.sub(r"\D", "", s)
-    if digits and len(digits) <= 15:
-        return digits
-    return s.lower()
-
-
-def is_uuid_key(key: str) -> bool:
-    return bool(_UUID_RE.match(key or ""))
-
 
 def best_peer(number: str, uuid: str) -> str:
     """Normalised peer key, preferring phone number over UUID, consulting peer_map."""
@@ -353,16 +322,6 @@ def _v1_upgrade_status(db, peer, new_status):
 
 # ── v2 write paths ────────────────────────────────────────────────────────────
 
-KIND_BY_MIME = (("image/", "image"), ("video/", "video"), ("audio/", "audio"))
-
-
-def kind_from_mime(mime: str) -> str:
-    for prefix, kind in KIND_BY_MIME:
-        if (mime or "").startswith(prefix):
-            return kind
-    return "file"
-
-
 def _v2_upsert_message(db, peer, dir_, kind, body, server_ts, status,
                        att_id="", mime="", quote_ts=0, quote_author="", quote_text="",
                        author=""):
@@ -566,24 +525,6 @@ def _backfill_v2(db):
 
 def _self_keys():
     return {normalize_peer(SIGNAL_NUMBER)}
-
-
-def _attachments_of(msg: dict):
-    out = []
-    for att in (msg.get("attachments") or []):
-        cid = att.get("id") or ""
-        if cid:
-            out.append((cid, att.get("contentType") or ""))
-    return out
-
-
-def _quote_of(msg: dict):
-    q = msg.get("quote") or {}
-    if not q:
-        return 0, "", ""
-    qt = q.get("text")
-    qa = q.get("author") or q.get("authorNumber") or q.get("authorUuid") or ""
-    return q.get("id") or 0, normalize_peer(qa), (qt if isinstance(qt, str) else "") or ""
 
 
 def handle_envelope(env: dict):
@@ -1003,6 +944,7 @@ def health():
     return jsonify({
         "ok": True,                       # frozen field
         "schema": SCHEMA_VERSION,
+        "api_version": API_VERSION,       # app warns on mismatch
         "ws_connected": _state["ws_connected"],
         "account_present": bool(SIGNAL_NUMBER),
         "last_envelope_age_s": age,
@@ -1249,4 +1191,9 @@ if __name__ == "__main__":
     init_db()
     start_workers()
     log.info("bridge v2 listening on :%d  number=%s  db=%s", PORT, SIGNAL_NUMBER, DB_PATH)
-    app.run(host="0.0.0.0", port=PORT, threaded=True)
+    try:
+        from waitress import serve
+        serve(app, host="0.0.0.0", port=PORT, threads=8)
+    except ImportError:
+        log.warning("waitress not installed; using Flask dev server")
+        app.run(host="0.0.0.0", port=PORT, threaded=True)

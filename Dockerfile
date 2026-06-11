@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY bridge.py .
+COPY bridge.py sigshapes.py ./
 
 VOLUME ["/data"]
 EXPOSE 9099
