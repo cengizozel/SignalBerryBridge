@@ -439,3 +439,13 @@ def test_self_thread_echo_is_delivered(bridge, client):
     bridge.handle_envelope(env(frame))
     it = [i for i in drain_items(client) if i["serverTs"] == 40000][0]
     assert it["status"] == 2
+
+
+def test_pni_service_id_keys_as_uuid():
+    """PNI:<uuid> (contact changed phones) must not become a fake number."""
+    from bridge import normalize_peer
+    u = "0f0bbaee-6fd7-4b35-a803-2479e9676df9"
+    assert normalize_peer("PNI:" + u) == u
+    assert normalize_peer("ACI:" + u.upper()) == u
+    # digit soup longer than E.164 is not a phone number
+    assert normalize_peer("0067435803247996769") == "0067435803247996769"

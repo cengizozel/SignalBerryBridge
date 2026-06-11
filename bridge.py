@@ -61,19 +61,32 @@ _state = {
 
 # ── peer normalisation ────────────────────────────────────────────────────────
 
+_UUID_SEARCH = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
+
+
 def normalize_peer(s: str) -> str:
     """
     Phone numbers  → digits only  ("+1 (555) 123-4567" → "15551234567")
     UUIDs          → lowercase    ("ABC-..." → "abc-...")
-    Anything else  → lowercase stripped
+    Service IDs    → bare uuid    ("PNI:<uuid>" → "<uuid>"; sent after a
+                                   contact re-registers / changes phones)
+    Anything else  → lowercase stripped; digit-stripping is refused for
+                     strings whose digits exceed E.164's 15-digit maximum
+                     (that would forge a fake number out of a uuid)
     """
     s = (s or "").strip()
     if not s:
         return ""
     if _UUID_RE.match(s):
         return s.lower()
+    m = _UUID_SEARCH.search(s)
+    if m:
+        return m.group(0).lower()
     digits = re.sub(r"\D", "", s)
-    return digits if digits else s.lower()
+    if digits and len(digits) <= 15:
+        return digits
+    return s.lower()
 
 
 def is_uuid_key(key: str) -> bool:
