@@ -664,6 +664,9 @@ def handle_envelope(env: dict):
                 text = (sent.get("message") or "").strip()
                 atts = _attachments_of(sent)
                 q_ts, q_author, q_text = _quote_of(sent)
+                # Note-to-Self echoes are delivered by definition; no delivery
+                # receipts ever arrive in the self thread to upgrade them
+                out_status = 2 if peer in _self_keys() else 1
 
                 if peer:
                     # v1 frozen
@@ -678,11 +681,11 @@ def handle_envelope(env: dict):
                         first = True
                         for cid, mime in atts:
                             _v2_upsert_message(db, peer, "out", kind_from_mime(mime),
-                                               text if first else "", sent_ts, 1,
+                                               text if first else "", sent_ts, out_status,
                                                cid, mime, q_ts, q_author, q_text)
                             first = False
                     elif text:
-                        _v2_upsert_message(db, peer, "out", "text", text, sent_ts, 1,
+                        _v2_upsert_message(db, peer, "out", "text", text, sent_ts, out_status,
                                            quote_ts=q_ts, quote_author=q_author,
                                            quote_text=q_text)
 

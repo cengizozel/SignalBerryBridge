@@ -429,3 +429,13 @@ def test_purge_single_peer_keeps_others(bridge, client):
     assert r.status_code == 200
     remaining = drain_items(client)
     assert len(remaining) == 1 and remaining[0]["peer"] == "15557772222"
+
+
+def test_self_thread_echo_is_delivered(bridge, client):
+    """Note-to-Self sync echoes never get receipts — born delivered."""
+    frame = sync_sent(text="note", ts=40000,
+                      dest_number="+15550009999",
+                      dest_uuid="00000000-0000-4000-8000-0000000000ff")
+    bridge.handle_envelope(env(frame))
+    it = [i for i in drain_items(client) if i["serverTs"] == 40000][0]
+    assert it["status"] == 2
