@@ -980,6 +980,8 @@ def _v2_row_json(r, include_uuid=True):
         item["quoteText"] = r["quote_text"]
     if r["reactions"] != "{}":
         item["reactions"] = json.loads(r["reactions"])
+    else:
+        item["reactions"] = {}  # explicit empty: reaction REMOVAL must propagate
     if r["edited_ts"]:
         item["editedTs"] = r["edited_ts"]
         item["editCount"] = r["edit_count"]
@@ -997,6 +999,10 @@ def v2_changes():
         return jsonify({"error": "invalid parameter"}), 400
 
     with _conn() as db:
+        # one BEGIN so items/markers/max_seq share a single WAL snapshot —
+        # separate autocommit SELECTs let a concurrent ingest land between
+        # the page and max_seq, and a client trusting max_seq would skip it
+        db.execute("BEGIN")
         rows = db.execute(
             "SELECT * FROM messages_v2 WHERE mod_seq > ? ORDER BY mod_seq ASC LIMIT ?",
             (since, limit),
@@ -1083,6 +1089,12 @@ def v2_sent():
         quote_ts = 0
 
     with write_tx() as db:
+        if body.get("edited_ts"):
+            # app-originated edit (no self-echo carries it here)
+            _v2_apply_edit(db, peer, server_ts,
+                           (body.get("body") or "").strip(),
+                           int(body.get("edited_ts")))
+            return jsonify({"ok": True})
         if body.get("deleted"):
             # app-originated remote delete: no self-echo exists to carry it here
             _v2_apply_delete(db, peer, server_ts)

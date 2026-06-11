@@ -162,7 +162,7 @@ def test_reaction_remove(bridge, client):
     _react(bridge, 15000, "🔥")
     _react(bridge, 15000, "🔥", remove=True)
     it = drain_items(client)[0]
-    assert "reactions" not in it  # empty map serialized away
+    assert it["reactions"] == {}  # explicit empty: removal must reach the app
 
 
 def test_reaction_replace(bridge, client):
