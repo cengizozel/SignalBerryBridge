@@ -506,3 +506,20 @@ def test_group_edit_from_phone(bridge, client):
     bridge.handle_envelope(env(edit))
     items = [i for i in drain_items(client) if i["serverTs"] == 54000]
     assert items[-1]["body"] == "edited!"
+
+
+def test_auth_enforced_when_token_set(tmp_path, monkeypatch):
+    import importlib
+    monkeypatch.setenv("SIGNAL_NUMBER", "+15550009999")
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "b.db"))
+    monkeypatch.setenv("BRIDGE_TOKEN", "s3cret-token")
+    import bridge as mod
+    importlib.reload(mod)
+    mod.init_db()
+    c = mod.app.test_client()
+    assert c.get("/health").status_code == 401
+    assert c.get("/health", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    assert c.get("/health", headers={"Authorization": "Bearer s3cret-token"}).status_code == 200
+    # reset module so later tests run tokenless
+    monkeypatch.delenv("BRIDGE_TOKEN")
+    importlib.reload(mod)

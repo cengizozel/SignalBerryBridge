@@ -40,6 +40,8 @@ SIGNAL_API_URL = os.environ.get("SIGNAL_API_URL", "http://localhost:5000").rstri
 SIGNAL_NUMBER  = os.environ.get("SIGNAL_NUMBER", "")
 DB_PATH        = os.environ.get("DB_PATH", "/data/bridge.db")
 PORT           = int(os.environ.get("PORT", "9099"))
+# shared secret for remote access. Empty = auth disabled (LAN/dev/tests).
+BRIDGE_TOKEN   = os.environ.get("BRIDGE_TOKEN", "").strip()
 
 SCHEMA_VERSION = 2
 # bump when the /v2/changes row shape changes in a way the app must match
@@ -850,6 +852,30 @@ def orphan_gc_worker():
 # ── HTTP API ──────────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
+
+
+@app.before_request
+def _require_token():
+    """When BRIDGE_TOKEN is set, every request must carry it as a bearer token.
+    Unset (LAN/dev/tests) leaves the bridge open as before. Defense-in-depth
+    behind Cloudflare Access, and the SOLE app-layer gate if Access is ever
+    misconfigured."""
+    if not BRIDGE_TOKEN:
+        return None
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer ") and _consteq(auth[7:].strip(), BRIDGE_TOKEN):
+        return None
+    return jsonify({"error": "unauthorized"}), 401
+
+
+def _consteq(a, b):
+    """Constant-time compare so token checks don't leak length/prefix by timing."""
+    if len(a) != len(b):
+        return False
+    r = 0
+    for x, y in zip(a, b):
+        r |= ord(x) ^ ord(y)
+    return r == 0
 
 
 # ---- v1 endpoints (FROZEN — do not change response shapes) ----
