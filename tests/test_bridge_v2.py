@@ -398,3 +398,22 @@ def test_v2_sent_deleted_flag(bridge, client):
     assert r.status_code == 200
     it = [i for i in drain_items(client) if i["serverTs"] == 34000][0]
     assert it.get("deleted") is True
+
+
+def test_purge_requires_confirm(bridge, client):
+    bridge.handle_envelope(env(data_message(text="keep me?", ts=36000)))
+    assert client.post("/v2/purge", json={}).status_code == 400
+    assert len(drain_items(client)) == 1  # nothing deleted
+
+
+def test_purge_wipes_data_but_keeps_seq_monotonic(bridge, client):
+    bridge.handle_envelope(env(data_message(text="old", ts=37000)))
+    seq_before = changes(client)["max_seq"]
+    assert client.post("/v2/purge", json={"confirm": "purge"}).status_code == 200
+    assert drain_items(client) == []
+    assert client.get(f"/messages?peer={PEER_KEY}&after=0").get_json()["items"] == []
+    # post-purge ingest continues ABOVE the old counter — stale cursors stay valid
+    bridge.handle_envelope(env(data_message(text="new", ts=38000)))
+    fresh = changes(client)
+    assert len(fresh["items"]) == 1
+    assert fresh["items"][0]["modSeq"] > seq_before

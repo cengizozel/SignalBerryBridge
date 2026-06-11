@@ -1148,6 +1148,23 @@ def v2_read_receipts():
             _v2_set_marker(db, peer, max(clean))
     return jsonify({"ok": True, "queued": len(clean)})
 
+@app.route("/v2/purge", methods=["POST"])
+def v2_purge():
+    """Wipe all message data (both schema versions) and derived state. The
+    mod_seq counter in `meta` is deliberately PRESERVED: clients hold their
+    cursor in prefs, and a counter reset would strand them past the new head.
+    Never touches signal-api account state — the device link survives."""
+    body = request.get_json(silent=True) or {}
+    if body.get("confirm") != "purge":
+        return jsonify({"error": "confirm required"}), 400
+    with write_tx() as db:
+        for t in ("messages", "messages_v2", "read_markers", "markers",
+                  "orphan_receipts", "receipt_queue", "peer_map"):
+            db.execute("DELETE FROM " + t)
+    log.warning("PURGE: all message data wiped on request")
+    return jsonify({"ok": True})
+
+
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def start_workers():
