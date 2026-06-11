@@ -23,10 +23,26 @@ services:
     environment:
       - SIGNAL_API_URL=http://signal-api:8080
       - SIGNAL_NUMBER=${SIGNAL_NUMBER}   # set in your shell or a .env file
+      # remote-access shared secret. Empty/unset = auth OFF (LAN only).
+      - BRIDGE_TOKEN=${BRIDGE_TOKEN:-}
     volumes:
       - bridge-data:/data
     depends_on:
       - signal-api
+
+  # Outbound tunnel to Cloudflare's edge — defeats CGNAT, no inbound ports.
+  # Dormant by default; bring up with:  docker compose --profile remote up -d
+  # Needs CF_TUNNEL_TOKEN in .env (from the Cloudflare Zero Trust dashboard).
+  # See docs/REMOTE_ACCESS.md.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: signal-cloudflared
+    restart: always
+    profiles: ["remote"]
+    command: tunnel --no-autoupdate run --token ${CF_TUNNEL_TOKEN:-}
+    depends_on:
+      - signal-api
+      - bridge
 
 volumes:
   bridge-data:
