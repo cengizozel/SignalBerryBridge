@@ -491,3 +491,18 @@ def test_group_receipt_by_timestamp(bridge, client):
     bridge.handle_envelope(env(receipt([53000], kind="delivery")))
     items = [i for i in drain_items(client) if i["serverTs"] == 53000]
     assert items[-1]["status"] >= 2
+
+
+def test_group_edit_from_phone(bridge, client):
+    """Edit transcripts nest groupInfo inside editMessage.dataMessage."""
+    frame = sync_sent(text="orig", ts=54000, dest_number="", dest_uuid="")
+    frame["envelope"]["syncMessage"]["sentMessage"]["groupInfo"] = {
+        "groupId": "EGID=", "type": "DELIVER"}
+    bridge.handle_envelope(env(frame))
+    edit = sync_sent(text="", ts=54100, dest_number="", dest_uuid="")
+    edit["envelope"]["syncMessage"]["sentMessage"]["editMessage"] = {
+        "targetSentTimestamp": 54000,
+        "dataMessage": {"message": "edited!", "groupInfo": {"groupId": "EGID="}}}
+    bridge.handle_envelope(env(edit))
+    items = [i for i in drain_items(client) if i["serverTs"] == 54000]
+    assert items[-1]["body"] == "edited!"

@@ -604,6 +604,10 @@ def handle_envelope(env: dict):
     with write_tx() as db:
         if data:
             group = data.get("groupInfo") or {}
+            if not group:
+                # edit envelopes nest the group marker inside the new revision
+                _em = data.get("editMessage") or edit_env or {}
+                group = (_em.get("dataMessage") or {}).get("groupInfo") or {}
             gid = (group.get("groupId") or "").strip()
             if group and not gid:
                 return
@@ -666,6 +670,9 @@ def handle_envelope(env: dict):
             sent = sync.get("sentMessage") or {}
             if sent:
                 s_group = sent.get("groupInfo") or {}
+                if not s_group:
+                    _sem = sent.get("editMessage") or {}
+                    s_group = (_sem.get("dataMessage") or {}).get("groupInfo") or {}
                 s_gid = (s_group.get("groupId") or "").strip()
                 if s_group and not s_gid:
                     return
