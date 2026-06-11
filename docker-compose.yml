@@ -1,8 +1,9 @@
 services:
   signal-api:
-    # Pinned: all protocol behavior (incl. no-self-echo, receipt shapes) is
-    # version-dependent — upgrade only after re-running the M1 protocol checks.
-    image: bbernhard/signal-cli-rest-api:0.99
+    # Pinned base 0.99 + signal-cli hotfixed to 0.14.5 (see signal-api-patched/
+    # Dockerfile). Upgrade only after re-running the M1 protocol checks.
+    build: ./signal-api-patched
+    image: signalberry-signal-api:0.99-cli0.14.5
     container_name: signal-api
     restart: always
     ports:
