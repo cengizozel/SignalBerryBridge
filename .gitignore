@@ -3,3 +3,5 @@
 *.db
 __pycache__/
 *.pyc
+backups/
+.venv/
