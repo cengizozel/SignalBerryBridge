@@ -1083,6 +1083,10 @@ def v2_sent():
         quote_ts = 0
 
     with write_tx() as db:
+        if body.get("deleted"):
+            # app-originated remote delete: no self-echo exists to carry it here
+            _v2_apply_delete(db, peer, server_ts)
+            return jsonify({"ok": True})
         _v2_upsert_message(db, peer, "out", kind, text, server_ts, 1,
                            att_id, mime, quote_ts,
                            normalize_peer(body.get("quote_author") or ""),

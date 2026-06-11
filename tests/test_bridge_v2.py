@@ -389,3 +389,12 @@ def test_health_shape(bridge, client):
     h = client.get("/health").get_json()
     assert h["ok"] is True and h["schema"] == 2
     assert "ws_connected" in h and "account_present" in h
+
+
+def test_v2_sent_deleted_flag(bridge, client):
+    """App-originated remote delete arrives via /v2/sent {deleted:1}."""
+    bridge.handle_envelope(env(sync_sent(text="to be deleted", ts=34000)))
+    r = client.post("/v2/sent", json={"peer": PEER_NUMBER, "server_ts": 34000, "deleted": 1})
+    assert r.status_code == 200
+    it = [i for i in drain_items(client) if i["serverTs"] == 34000][0]
+    assert it.get("deleted") is True
