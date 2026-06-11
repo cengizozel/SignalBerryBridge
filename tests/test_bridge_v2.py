@@ -417,3 +417,15 @@ def test_purge_wipes_data_but_keeps_seq_monotonic(bridge, client):
     fresh = changes(client)
     assert len(fresh["items"]) == 1
     assert fresh["items"][0]["modSeq"] > seq_before
+
+
+def test_purge_single_peer_keeps_others(bridge, client):
+    bridge.handle_envelope(env(data_message(text="peer A msg", ts=39000)))
+    other = data_message(text="peer B msg", ts=39001,
+                         src_number="+15557772222",
+                         src_uuid="99999999-8888-4777-8666-555544443333")
+    bridge.handle_envelope(env(other))
+    r = client.post("/v2/purge", json={"confirm": "purge", "peer": PEER_NUMBER})
+    assert r.status_code == 200
+    remaining = drain_items(client)
+    assert len(remaining) == 1 and remaining[0]["peer"] == "15557772222"

@@ -1150,18 +1150,32 @@ def v2_read_receipts():
 
 @app.route("/v2/purge", methods=["POST"])
 def v2_purge():
-    """Wipe all message data (both schema versions) and derived state. The
-    mod_seq counter in `meta` is deliberately PRESERVED: clients hold their
-    cursor in prefs, and a counter reset would strand them past the new head.
-    Never touches signal-api account state — the device link survives."""
+    """Wipe message data — everything, or one peer's thread when `peer` is
+    given. The mod_seq counter in `meta` is deliberately PRESERVED: clients
+    hold their cursor in prefs, and a counter reset would strand them past the
+    new head. Never touches signal-api account state — the device link
+    survives. VACUUM afterwards so deleted content doesn't linger in free
+    pages / WAL (a purge should mean the bytes are gone)."""
     body = request.get_json(silent=True) or {}
     if body.get("confirm") != "purge":
         return jsonify({"error": "confirm required"}), 400
+    peer = normalize_peer(body.get("peer") or "")
     with write_tx() as db:
-        for t in ("messages", "messages_v2", "read_markers", "markers",
-                  "orphan_receipts", "receipt_queue", "peer_map"):
-            db.execute("DELETE FROM " + t)
-    log.warning("PURGE: all message data wiped on request")
+        if peer:
+            for t in ("messages", "messages_v2", "read_markers", "markers",
+                      "orphan_receipts"):
+                db.execute("DELETE FROM " + t + " WHERE peer = ?", (peer,))
+            for row in db.execute("SELECT id, recipient FROM receipt_queue").fetchall():
+                if normalize_peer(row["recipient"]) == peer:
+                    db.execute("DELETE FROM receipt_queue WHERE id = ?", (row["id"],))
+        else:
+            for t in ("messages", "messages_v2", "read_markers", "markers",
+                      "orphan_receipts", "receipt_queue", "peer_map"):
+                db.execute("DELETE FROM " + t)
+    with _conn() as db:
+        db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        db.execute("VACUUM")
+    log.warning("PURGE: %s wiped on request", peer or "ALL message data")
     return jsonify({"ok": True})
 
 
