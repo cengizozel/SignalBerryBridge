@@ -78,6 +78,8 @@ def normalize_peer(s: str) -> str:
     s = (s or "").strip()
     if not s:
         return ""
+    if s.startswith("group:"):
+        return s          # base64 group id: case/symbols significant, never touch
     if _UUID_RE.match(s):
         return s.lower()
     m = _UUID_SEARCH.search(s)
@@ -195,6 +197,10 @@ def init_db():
         db.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v INTEGER)")
         db.execute("INSERT OR IGNORE INTO meta (k, v) VALUES ('seq', 0)")
         db.execute(f"INSERT OR IGNORE INTO meta (k, v) VALUES ('schema', {SCHEMA_VERSION})")
+        try:
+            db.execute("ALTER TABLE messages_v2 ADD COLUMN author TEXT NOT NULL DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass  # already present
         if not db.execute("SELECT 1 FROM messages_v2 LIMIT 1").fetchone():
             _backfill_v2(db)
 
@@ -358,16 +364,17 @@ def kind_from_mime(mime: str) -> str:
 
 
 def _v2_upsert_message(db, peer, dir_, kind, body, server_ts, status,
-                       att_id="", mime="", quote_ts=0, quote_author="", quote_text=""):
+                       att_id="", mime="", quote_ts=0, quote_author="", quote_text="",
+                       author=""):
     """INSERT OR IGNORE + status-bump UPDATE; idempotent. Returns True if inserted."""
     seq = db.next_seq()
     cur = db.execute(
         "INSERT OR IGNORE INTO messages_v2 "
         "(peer, dir, kind, body, server_ts, status, att_id, mime, "
-        " quote_ts, quote_author, quote_text, mod_seq) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " quote_ts, quote_author, quote_text, mod_seq, author) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (peer, dir_, kind, body or "", server_ts, status, att_id or "", mime or "",
-         quote_ts, quote_author or "", quote_text or "", seq),
+         quote_ts, quote_author or "", quote_text or "", seq, author or ""),
     )
     inserted = cur.rowcount > 0
     if not inserted:
@@ -417,6 +424,16 @@ def _v2_match_target(db, peer, target_ts):
 
 
 def _v2_apply_receipt(db, peer, ts, new_status):
+    # group sends live under "group:<id>", but their receipts arrive from
+    # individual members — match those by timestamp across group threads
+    cur = db.execute(
+        "UPDATE messages_v2 SET status = MAX(status, ?), mod_seq = ? "
+        "WHERE dir='out' AND deleted=0 AND peer LIKE 'group:%' "
+        "AND (server_ts = ? OR edited_ts = ?)",
+        (new_status, db.next_seq(), ts, ts),
+    )
+    if cur.rowcount > 0:
+        return
     rows = _v2_match_target(db, peer, ts)
     matched = False
     for r in rows:
@@ -586,17 +603,22 @@ def handle_envelope(env: dict):
 
     with write_tx() as db:
         if data:
-            if data.get("groupInfo"):
-                return  # groups: next milestone; sender-keyed group rows are garbage
-            peer = best_peer(src_num, src_uuid)
+            group = data.get("groupInfo") or {}
+            gid = (group.get("groupId") or "").strip()
+            if group and not gid:
+                return
+            sender = best_peer(src_num, src_uuid)
+            # groups: thread keyed by group id; the sender becomes the row author
+            peer = ("group:" + gid) if gid else sender
+            author = sender if gid else ""
 
             reaction = data.get("reaction")
             if reaction:
                 target_ts = reaction.get("targetSentTimestamp") or 0
-                author = normalize_peer(reaction.get("targetAuthor") or "")
-                dir_ = "out" if author in _self_keys() else "in"
+                target_author = normalize_peer(reaction.get("targetAuthor") or "")
+                dir_ = "out" if target_author in _self_keys() else "in"
                 _v2_apply_reaction(db, peer, dir_, target_ts,
-                                   "peer:" + peer,
+                                   "peer:" + sender,
                                    reaction.get("emoji") or "",
                                    bool(reaction.get("isRemove")))
                 return
@@ -619,12 +641,13 @@ def handle_envelope(env: dict):
             atts = _attachments_of(data)
             q_ts, q_author, q_text = _quote_of(data)
 
-            # v1 frozen semantics
-            if text:
-                _v1_store(db, peer, "in", text, ts, status=2)
-            for cid, mime in atts:
-                if mime.startswith("image/"):
-                    _v1_store(db, peer, "in", "", ts, status=2, att_id=cid, mime=mime)
+            # v1 frozen semantics (v1 never understood groups — keep it that way)
+            if not gid:
+                if text:
+                    _v1_store(db, peer, "in", text, ts, status=2)
+                for cid, mime in atts:
+                    if mime.startswith("image/"):
+                        _v1_store(db, peer, "in", "", ts, status=2, att_id=cid, mime=mime)
 
             # v2 semantics: caption merged onto first attachment row
             if atts:
@@ -632,22 +655,25 @@ def handle_envelope(env: dict):
                 for cid, mime in atts:
                     _v2_upsert_message(db, peer, "in", kind_from_mime(mime),
                                        text if first else "", ts, 2, cid, mime,
-                                       q_ts, q_author, q_text)
+                                       q_ts, q_author, q_text, author=author)
                     first = False
             elif text:
                 _v2_upsert_message(db, peer, "in", "text", text, ts, 2,
-                                   quote_ts=q_ts, quote_author=q_author, quote_text=q_text)
+                                   quote_ts=q_ts, quote_author=q_author, quote_text=q_text,
+                                   author=author)
 
         if sync:
             sent = sync.get("sentMessage") or {}
             if sent:
-                if sent.get("groupInfo"):
+                s_group = sent.get("groupInfo") or {}
+                s_gid = (s_group.get("groupId") or "").strip()
+                if s_group and not s_gid:
                     return
                 dest_n = sent.get("destinationNumber") or sent.get("destination") or ""
                 dest_u = sent.get("destinationUuid") or ""
                 if dest_n and dest_u:
                     learn_mapping(dest_u, dest_n, db=db)
-                peer = best_peer(dest_n, dest_u)
+                peer = ("group:" + s_gid) if s_gid else best_peer(dest_n, dest_u)
                 sent_ts = sent.get("timestamp") or ts
 
                 reaction = sent.get("reaction")
@@ -682,13 +708,14 @@ def handle_envelope(env: dict):
                 out_status = 2 if peer in _self_keys() else 1
 
                 if peer:
-                    # v1 frozen
-                    if text:
-                        _v1_store(db, peer, "out", text, sent_ts, status=1)
-                    for cid, mime in atts:
-                        if mime.startswith("image/"):
-                            _v1_store(db, peer, "out", "", sent_ts, status=1,
-                                      att_id=cid, mime=mime)
+                    # v1 frozen (never group rows)
+                    if not s_gid:
+                        if text:
+                            _v1_store(db, peer, "out", text, sent_ts, status=1)
+                        for cid, mime in atts:
+                            if mime.startswith("image/"):
+                                _v1_store(db, peer, "out", "", sent_ts, status=1,
+                                          att_id=cid, mime=mime)
                     # v2
                     if atts:
                         first = True
@@ -987,6 +1014,11 @@ def _v2_row_json(r, include_uuid=True):
         "status": r["status"],
         "modSeq": r["mod_seq"],
     }
+    try:
+        if r["author"]:
+            item["author"] = r["author"]
+    except (IndexError, KeyError):
+        pass
     if r["att_id"]:
         item["attId"] = r["att_id"]
         item["mime"] = r["mime"]

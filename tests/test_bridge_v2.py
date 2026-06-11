@@ -83,11 +83,15 @@ def test_video_and_file_kinds(bridge, client):
     assert kinds == {"v1": "video", "f1": "file"}
 
 
-def test_group_messages_skipped(bridge, client):
+def test_group_messages_not_sender_keyed(bridge, client):
+    """Group traffic must never pollute the sender's DM thread (the v1 bug)."""
     frame = data_message(text="group chatter", ts=7000)
     frame["envelope"]["dataMessage"]["groupInfo"] = {"groupId": "abc"}
     bridge.handle_envelope(env(frame))
-    assert drain_items(client) == []
+    items = [i for i in drain_items(client) if i["serverTs"] == 7000]
+    assert len(items) == 1
+    assert items[0]["peer"] == "group:abc"
+    assert items[0]["peer"] != PEER_KEY
 
 
 def test_quote_passthrough(bridge, client):
@@ -449,3 +453,41 @@ def test_pni_service_id_keys_as_uuid():
     assert normalize_peer("ACI:" + u.upper()) == u
     # digit soup longer than E.164 is not a phone number
     assert normalize_peer("0067435803247996769") == "0067435803247996769"
+
+
+def test_group_message_keys_by_group(bridge, client):
+    """Incoming group traffic: thread = group id, author = sender."""
+    frame = data_message(text="hi group", ts=51000)
+    frame["envelope"]["dataMessage"]["groupInfo"] = {
+        "groupId": "uuOr+0ikwaXuf7XpgYBg67j3BRHuSZ4pSsc1lVLBknA=", "type": "DELIVER"}
+    bridge.handle_envelope(env(frame))
+    items = [i for i in drain_items(client) if i["serverTs"] == 51000]
+    assert len(items) == 1
+    assert items[0]["peer"] == "group:uuOr+0ikwaXuf7XpgYBg67j3BRHuSZ4pSsc1lVLBknA="
+    assert items[0]["author"] == PEER_KEY
+    assert items[0]["dir"] == "in"
+
+
+def test_group_sync_sent(bridge, client):
+    """Phone sends to a group -> out row under the group key."""
+    frame = sync_sent(text="from phone", ts=52000,
+                      dest_number="", dest_uuid="")
+    frame["envelope"]["syncMessage"]["sentMessage"]["groupInfo"] = {
+        "groupId": "abc+/=GROUPID", "type": "DELIVER"}
+    bridge.handle_envelope(env(frame))
+    items = [i for i in drain_items(client) if i["serverTs"] == 52000]
+    assert len(items) == 1
+    assert items[0]["peer"] == "group:abc+/=GROUPID"
+    assert items[0]["dir"] == "out"
+    assert "author" not in items[0]
+
+
+def test_group_receipt_by_timestamp(bridge, client):
+    """Delivery receipts from members upgrade group out rows matched by ts."""
+    frame = sync_sent(text="g", ts=53000, dest_number="", dest_uuid="")
+    frame["envelope"]["syncMessage"]["sentMessage"]["groupInfo"] = {
+        "groupId": "GID=", "type": "DELIVER"}
+    bridge.handle_envelope(env(frame))
+    bridge.handle_envelope(env(receipt([53000], kind="delivery")))
+    items = [i for i in drain_items(client) if i["serverTs"] == 53000]
+    assert items[-1]["status"] >= 2
