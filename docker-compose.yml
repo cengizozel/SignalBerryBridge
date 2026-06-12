@@ -45,7 +45,7 @@ services:
     volumes:
       - ./remote/signal-api-auth.conf.template:/etc/nginx/templates/default.conf.template:ro
     ports:
-      - "5001:80"
+      - "${API_AUTH_PORT:-5001}:80"
     depends_on:
       - signal-api
 
