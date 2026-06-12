@@ -35,7 +35,9 @@ signal-api's raw 5000.
    docker compose up -d bridge
    ```
 3. Now expose **`localhost:5001`** and **`localhost:9099`** with whatever
-   transport you choose (examples below).
+   transport you choose (examples below). 5001 is the proxy's default host port;
+   if it is already in use, set `API_AUTH_PORT` in `.env` and use that value
+   everywhere 5001 appears below.
 4. In the app's **Remote access** section:
    - **Server:** `https://<your-signal-api-host>`   (fronts port 5001)
    - **Bridge URL:** `https://<your-bridge-host>`    (fronts port 9099)
