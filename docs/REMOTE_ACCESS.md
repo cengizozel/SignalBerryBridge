@@ -1,9 +1,15 @@
 # Remote access (off-LAN)
 
 Use SignalBerry away from home WiFi. The design is **transport-agnostic**: you
-expose two local services however you like — Cloudflare Tunnel, Tailscale,
-WireGuard, a VPS reverse proxy, plain port-forward — and a single shared
+expose two local services however you like (Cloudflare Tunnel, Tailscale,
+WireGuard, a VPS reverse proxy, plain port-forward) and a single shared
 **bearer token** protects both, so you are not tied to any one provider.
+
+**The bridge token: recommended to set, required once set.** Leave `SB_AUTH_TOKEN`
+unset and the server runs open, which is fine on a trusted home LAN but not for
+internet exposure. Set it and every request must carry it, so anyone who finds
+your address still cannot read or send your messages. So a token is strongly
+recommended for remote use, and once you set one the app cannot connect without it.
 
 ## The two services and how they're protected
 
@@ -14,7 +20,7 @@ WireGuard, a VPS reverse proxy, plain port-forward — and a single shared
 
 The app sends `Authorization: Bearer <SB_AUTH_TOKEN>` on every request, plus the
 modern TLS (Conscrypt) needed by old BlackBerry hardware. So for remote use you
-expose **port 5001** (the auth proxy) and **port 9099** (the bridge) — never
+expose **port 5001** (the auth proxy) and **port 9099** (the bridge), never
 signal-api's raw 5000.
 
 ## Activate the token + proxy
@@ -56,13 +62,13 @@ and nothing changes (no token → no headers → original behaviour).
 - Cloudflare provides TLS at the edge; the app talks to it over Conscrypt TLS 1.3.
 - *Optional extra layer:* Cloudflare Access with a service token gives edge-level
   filtering on top of the bearer token. If you use it, paste the Access Client
-  ID/Secret into the app's CF fields. Not required — the bearer token already
+  ID/Secret into the app's CF fields. Not required, since the bearer token already
   protects both services.
 
 ### Tailscale / WireGuard / other VPN
 - Put the home server on the VPN; reach `100.x.y.z:5001` and `:9099` from the
   phone *if* the phone can run the VPN. (Note: the BlackBerry Q10's BB10 Android
-  runtime can't run a VPN client — Cloudflare Tunnel is the practical pick there.)
+  runtime can't run a VPN client, Cloudflare Tunnel is the practical pick there.)
 
 ### VPS reverse proxy
 - A small VPS with a real IP, reverse-proxying (and/or TLS-terminating) to the
@@ -77,6 +83,6 @@ moves bytes.
 - One secret, two services: `SB_AUTH_TOKEN` (legacy alias `BRIDGE_TOKEN` still
   read). Rotate it in `.env` + `docker compose up -d bridge signal-api-auth` and
   update the app.
-- Secrets live only in `.env` and app prefs — never in git (`.env` is gitignored).
+- Secrets live only in `.env` and app prefs, never in git (`.env` is gitignored).
 - The auth-proxy token check is a simple string compare (not constant-time);
   fine for a personal deployment behind a tunnel.
